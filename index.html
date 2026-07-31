@@ -647,7 +647,11 @@ ${error.message || ''}`);
   async function openEditor(date) {
     await refreshEntries();
     const existing=await dbGet(date);
+    state.selectedDate=date;
     state.current=existing ? deepCopy(existing) : blankEntry(date);
+    // 저장 전의 원래 날짜를 별도로 기억합니다. 새 일기는 원래 날짜가 없으므로 null입니다.
+    // 이 값을 selectedDate로 대신하면 다른 날짜의 일기가 삭제될 수 있습니다.
+    state.current._originalDate=existing ? existing.date : null;
     state.current.photos ||= []; state.current.strokes ||= []; state.current.texts ||= [];
     state.selectedPhotoId=null; state.selectedTextId=null; state.mode='select'; state.history=[]; state.imageCache.clear(); state.dirty=false;
     $('#entryDate').value=state.current.date; $('#entryTitle').value=state.current.title||''; $('#diaryText').value=state.current.text||'';
@@ -966,12 +970,48 @@ ${error.message || ''}`);
     },'image/png');
   }
   async function saveCurrent(silent=false){
-    if(!state.current||state.screen!=='editor')return;collectFields(); if(!state.current.date){toast('날짜를 골라주세요');return;}
-    const oldDate=state.current._originalDate||state.selectedDate;
-    state.current.thumbnail=makeThumbnail();state.current.updatedAt=Date.now();state.current._originalDate=undefined;
-    if(oldDate&&oldDate!==state.current.date) await dbDelete(oldDate);
-    try{await dbPut(deepCopy(state.current));state.selectedDate=state.current.date;state.dirty=false;$('#saveState').textContent='저장됨';$('#deleteEntryBtn').style.visibility='visible';await refreshEntries();if(!silent)toast('네모를 저장했어요');}
-    catch(e){console.error(e);$('#saveState').textContent='저장 실패';toast('저장 공간이 부족하거나 저장하지 못했어요');}
+    if(!state.current||state.screen!=='editor')return;
+    collectFields();
+    if(!state.current.date){toast('날짜를 골라주세요');return;}
+
+    const oldDate=state.current._originalDate||null;
+    const targetDate=state.current.date;
+
+    // 기존 일기의 날짜를 이미 기록이 있는 날짜로 바꿀 때는 실수로 덮어쓰지 않도록 확인합니다.
+    if(oldDate&&oldDate!==targetDate){
+      const targetEntry=await dbGet(targetDate);
+      if(targetEntry&&!confirm(`${formatDate(targetDate)}에 이미 작성한 일기가 있어요. 그 일기를 현재 내용으로 덮어쓸까요?`)){
+        state.current.date=oldDate;
+        $('#entryDate').value=oldDate;
+        $('#saveState').textContent='날짜 변경 취소';
+        return;
+      }
+    }
+
+    state.current.thumbnail=makeThumbnail();
+    state.current.updatedAt=Date.now();
+    const entryToSave=deepCopy(state.current);
+    delete entryToSave._originalDate;
+
+    try{
+      // 새 날짜를 먼저 안전하게 저장한 뒤에만 이전 날짜의 레코드를 삭제합니다.
+      await dbPut(entryToSave);
+      if(oldDate&&oldDate!==targetDate) await dbDelete(oldDate);
+
+      state.current=deepCopy(entryToSave);
+      state.current._originalDate=targetDate;
+      state.selectedDate=targetDate;
+      state.dirty=false;
+      $('#saveState').textContent='저장됨';
+      $('#deleteEntryBtn').style.visibility='visible';
+      await refreshEntries();
+      if(!silent)toast('네모를 저장했어요');
+    }
+    catch(e){
+      console.error(e);
+      $('#saveState').textContent='저장 실패';
+      toast('저장 공간이 부족하거나 저장하지 못했어요');
+    }
   }
 
   /* Archive */
@@ -990,7 +1030,7 @@ ${error.message || ''}`);
   $('#openDateBtn').addEventListener('click',()=>openEditor(state.selectedDate));
   $('#newEntryBtn').addEventListener('click',()=>openEditor(toISO(new Date())));
   $('#editorBack').addEventListener('click',async()=>{if(state.dirty)await saveCurrent(true);showScreen('home');});
-  $('#entryDate').addEventListener('change',()=>{state.current._originalDate=state.current._originalDate||state.current.date;state.current.date=$('#entryDate').value;markDirty();});
+  $('#entryDate').addEventListener('change',()=>{state.current.date=$('#entryDate').value;markDirty();});
   $('#entryTitle').addEventListener('input',()=>markDirty());$('#diaryText').addEventListener('input',()=>markDirty());
   $('#fontSize').addEventListener('input',()=>{applyFontSize();markDirty();});
   $$('.mood-chip').forEach(b=>b.addEventListener('click',()=>{setMood(state.current.mood===b.dataset.mood?'':b.dataset.mood);markDirty();}));
